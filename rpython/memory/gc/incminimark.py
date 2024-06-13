@@ -370,9 +370,14 @@ class IncrementalMiniMarkGC(MovingGCBase):
         self.size_objects_made_old = r_uint(0)
         self.threshold_objects_made_old = r_uint(0)
 
+        # result of time.time when last minor collection ended. initialized by setup
+        self._timestamp_last_minor_gc = 0.0
+
 
     def setup(self):
         """Called at run-time to initialize the GC."""
+        self._timestamp_last_minor_gc = time.time()
+
         #
         # Hack: MovingGCBase.setup() sets up stuff related to id(), which
         # we implement differently anyway.  So directly call GCBase.setup().
@@ -1768,6 +1773,7 @@ class IncrementalMiniMarkGC(MovingGCBase):
         #
         start = time.time()
         debug_start("gc-minor")
+        debug_print("time since end of last minor GC:", start - self._timestamp_last_minor_gc)
         #
         # All nursery barriers are invalid from this point on.  They
         # are evaluated anew as part of the minor collection.
@@ -1964,7 +1970,10 @@ class IncrementalMiniMarkGC(MovingGCBase):
         #
         self.root_walker.finished_minor_collection()
         #
-        duration = time.time() - start
+        end = time.time()
+        duration = end - start
+        self._timestamp_last_minor_gc = end
+
         self.total_gc_time += duration
         debug_print("time taken:", duration)
         debug_stop("gc-minor")
