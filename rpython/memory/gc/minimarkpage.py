@@ -143,6 +143,7 @@ class ArenaCollection(object):
         self.peak_memory_used = r_uint(0)
         self.total_memory_alloced = r_uint(0)
         self.peak_memory_alloced = r_uint(0)
+        self.freed_since_last_prepare = r_uint(0)
 
 
     def _new_page_ptr_list(self, length):
@@ -330,6 +331,7 @@ class ArenaCollection(object):
         self.peak_memory_used = max(self.peak_memory_used,
                                     self.total_memory_used)
         self.total_memory_used = r_uint(0)
+        self.freed_since_last_prepare = r_uint(0)
         #
         size_class = self.small_request_threshold >> WORD_POWER_2
         self.size_class_with_old_pages = size_class
@@ -554,6 +556,7 @@ class ArenaCollection(object):
                     #
                     # Update the number of free objects in the page.
                     page.nfree += 1
+                    self.freed_since_last_prepare += block_size
                     #
                 else:
                     # The object survives.

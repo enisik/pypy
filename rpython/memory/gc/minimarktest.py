@@ -38,6 +38,7 @@ class SimpleArenaCollection(object):
         self.old_all_objects = self.all_objects
         self.all_objects = []
         self.total_memory_used = 0
+        self.freed_since_last_prepare = 0
 
     def mass_free_incremental(self, ok_to_free_func, max_pages):
         old = self.old_all_objects
@@ -45,6 +46,7 @@ class SimpleArenaCollection(object):
             rawobj, nsize = old.pop()
             if ok_to_free_func(rawobj):
                 llarena.arena_free(rawobj)
+                self.freed_since_last_prepare += nsize
             else:
                 self.all_objects.append((rawobj, nsize))
                 self.total_memory_used += nsize

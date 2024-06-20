@@ -2541,6 +2541,7 @@ class IncrementalMiniMarkGC(MovingGCBase):
                 #
                 self.stat_ac_arenas_count = self.ac.arenas_count
                 self.stat_rawmalloced_total_size = self.rawmalloced_total_size
+                self.stat_freed_raw_memory_in_major_collection = r_uint(0)
                 self.gc_state = STATE_SWEEPING
             #END MARKING
         elif self.gc_state == STATE_SWEEPING:
@@ -2597,6 +2598,8 @@ class IncrementalMiniMarkGC(MovingGCBase):
                 debug_print("bytes raw-malloced:   ",
                             self.stat_rawmalloced_total_size, " => ",
                             self.rawmalloced_total_size)
+                freed = self.stat_freed_raw_memory_in_major_collection + self.ac.freed_since_last_prepare
+                debug_print("freed in this major collection:", freed)
                 debug_print("next major collection threshold: ",
                             self.next_major_collection_threshold)
                 total_memory_used = self.get_total_memory_used()
@@ -2675,6 +2678,7 @@ class IncrementalMiniMarkGC(MovingGCBase):
         if self.header(obj).tid & check_flag:
             self.header(obj).tid &= ~check_flag   # survives
             self.old_rawmalloced_objects.append(obj)
+            return r_uint(0)
         else:
             size_gc_header = self.gcheaderbuilder.size_gc_header
             totalsize = size_gc_header + self.get_size(obj)
@@ -2697,6 +2701,7 @@ class IncrementalMiniMarkGC(MovingGCBase):
             #
             llarena.arena_free(arena)
             self.rawmalloced_total_size -= r_uint(allocsize)
+            return r_uint(allocsize)
 
     def start_free_rawmalloc_objects(self):
         ll_assert(not self.raw_malloc_might_sweep.non_empty(),
@@ -2705,12 +2710,13 @@ class IncrementalMiniMarkGC(MovingGCBase):
         self.raw_malloc_might_sweep = self.old_rawmalloced_objects
         self.old_rawmalloced_objects = swap
 
-    # Returns true when finished processing objects
+    # Returns number of remaining objects
     def free_unvisited_rawmalloc_objects_step(self, nobjects):
         while self.raw_malloc_might_sweep.non_empty() and nobjects > 0:
             obj = self.raw_malloc_might_sweep.pop()
-            self.free_rawmalloced_object_if_unvisited(obj, GCFLAG_VISITED)
+            freed_mem = self.free_rawmalloced_object_if_unvisited(obj, GCFLAG_VISITED)
             nobjects -= 1
+            self.stat_freed_raw_memory_in_major_collection += freed_mem
 
         return nobjects
 
