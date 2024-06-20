@@ -2599,6 +2599,8 @@ class IncrementalMiniMarkGC(MovingGCBase):
                             self.rawmalloced_total_size)
                 debug_print("next major collection threshold: ",
                             self.next_major_collection_threshold)
+                total_memory_used = self.get_total_memory_used()
+                debug_print("total memory used:", total_memory_used)
                 debug_stop("gc-collect-done")
                 self.hooks.fire_gc_collect(
                     num_major_collects=self.num_major_collects,
