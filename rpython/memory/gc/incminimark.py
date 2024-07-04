@@ -572,10 +572,10 @@ class IncrementalMiniMarkGC(MovingGCBase):
         # See translator/c/test/test_newgc, test_nongc_attached_to_gc
         self.next_major_collection_initial = self.min_heap_size
         self.next_major_collection_threshold = self.min_heap_size
-        debug_print("next major collection threshold: ",
-                    self.next_major_collection_threshold)
         self.set_major_threshold_from(0.0)
         ll_assert(self.extra_threshold == 0, "extra_threshold set too early")
+        debug_print("next major collection threshold: ",
+                    self.next_major_collection_threshold)
         debug_stop("gc-set-nursery-size")
 
 
