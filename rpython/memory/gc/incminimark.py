@@ -1775,6 +1775,8 @@ class IncrementalMiniMarkGC(MovingGCBase):
         #
         start = time.time()
         debug_start("gc-minor")
+        debug_print("memory used before collect:", self.get_total_memory_used())
+        debug_print("current threshold:", self.next_major_collection_threshold)
         debug_print("time since end of last minor GC:", start - self._timestamp_last_minor_gc)
         #
         # All nursery barriers are invalid from this point on.  They
