@@ -556,6 +556,7 @@ class IncrementalMiniMarkGC(MovingGCBase):
         return nursery
 
     def allocate_nursery(self):
+        self.program_start = time.time()
         debug_start("gc-set-nursery-size")
         debug_print("nursery size:", self.nursery_size)
         self.nursery = self._alloc_nursery()
@@ -1775,6 +1776,7 @@ class IncrementalMiniMarkGC(MovingGCBase):
         #
         start = time.time()
         debug_start("gc-minor")
+        debug_print("time since program start: ", start - self.program_start)
         debug_print("memory used before collect:", self.get_total_memory_used())
         debug_print("current threshold:", self.next_major_collection_threshold)
         debug_print("time since end of last minor GC:", start - self._timestamp_last_minor_gc)
@@ -2403,6 +2405,7 @@ class IncrementalMiniMarkGC(MovingGCBase):
     def major_collection_step(self, reserving_size=0):
         start = time.time()
         debug_start("gc-collect-step")
+        debug_print("time since program start: ", start - self.program_start)
         oldstate = self.gc_state
         debug_print("starting gc state: ", GC_STATES[self.gc_state])
         # Debugging checks
