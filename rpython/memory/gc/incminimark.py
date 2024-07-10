@@ -2468,7 +2468,7 @@ class IncrementalMiniMarkGC(MovingGCBase):
                         "plus",
                         self.more_objects_to_trace.length())
             estimate = self.gc_increment_step
-            estimate_from_nursery = self.nursery_surviving_size * 2
+            estimate_from_nursery = r_uint(self.nursery_surviving_size * 2)
             if estimate_from_nursery > estimate:
                 estimate = estimate_from_nursery
             estimate = intmask(estimate)
