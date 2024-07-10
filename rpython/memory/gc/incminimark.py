@@ -2680,30 +2680,34 @@ class IncrementalMiniMarkGC(MovingGCBase):
         self.header(obj).tid &= ~GCFLAG_VISITED
 
     def free_rawmalloced_object_if_unvisited(self, obj, check_flag):
+        size_gc_header = self.gcheaderbuilder.size_gc_header
+        totalsize = size_gc_header + self.get_size(obj)
+        allocsize = raw_malloc_usage(totalsize)
+        arena = llarena.getfakearenaaddress(obj - size_gc_header)
+        #
+        # Must also include the card marker area, if any
+        if (self.card_page_indices > 0    # <- this is constant-folded
+            and self.header(obj).tid & GCFLAG_HAS_CARDS):
+            #
+            # Get the length and compute the number of extra bytes
+            typeid = self.get_type_id(obj)
+            ll_assert(self.has_gcptr_in_varsize(typeid),
+                      "GCFLAG_HAS_CARDS but not has_gcptr_in_varsize")
+            offset_to_length = self.varsize_offset_to_length(typeid)
+            length = (obj + offset_to_length).signed[0]
+            extra_words = self.card_marking_words_for_length(length)
+            arena -= extra_words * WORD
+            allocsize += extra_words * WORD
+        #
         if self.header(obj).tid & check_flag:
             self.header(obj).tid &= ~check_flag   # survives
             self.old_rawmalloced_objects.append(obj)
+            if check_flag == GCFLAG_VISITED_RMY:
+                # if its a raw-malloced young object that survives, we need to
+                # add its size to the nursery_surviving_size
+                self.nursery_surviving_size += allocsize
             return r_uint(0)
         else:
-            size_gc_header = self.gcheaderbuilder.size_gc_header
-            totalsize = size_gc_header + self.get_size(obj)
-            allocsize = raw_malloc_usage(totalsize)
-            arena = llarena.getfakearenaaddress(obj - size_gc_header)
-            #
-            # Must also include the card marker area, if any
-            if (self.card_page_indices > 0    # <- this is constant-folded
-                and self.header(obj).tid & GCFLAG_HAS_CARDS):
-                #
-                # Get the length and compute the number of extra bytes
-                typeid = self.get_type_id(obj)
-                ll_assert(self.has_gcptr_in_varsize(typeid),
-                          "GCFLAG_HAS_CARDS but not has_gcptr_in_varsize")
-                offset_to_length = self.varsize_offset_to_length(typeid)
-                length = (obj + offset_to_length).signed[0]
-                extra_words = self.card_marking_words_for_length(length)
-                arena -= extra_words * WORD
-                allocsize += extra_words * WORD
-            #
             llarena.arena_free(arena)
             self.rawmalloced_total_size -= r_uint(allocsize)
             return r_uint(allocsize)

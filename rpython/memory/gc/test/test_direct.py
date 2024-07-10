@@ -1018,6 +1018,28 @@ class TestIncrementalMiniMarkGCFull(DirectGCTest):
         # _debug_check_object_scanning, called on the shadow
         self.gc.collect()
 
+    def test_nursery_surviving_size_contains_raw_malloced_survivors(self):
+        p = self.malloc(S)
+        self.stackroots.append(p)
+        self.gc._minor_collection()
+        assert self.gc.nursery_surviving_size > 0
+
+        self.stackroots.pop()
+        self.gc._minor_collection()
+        assert self.gc.nursery_surviving_size == 0
+
+        assert self.gc.rawmalloced_total_size == 0
+        s = self.malloc(STR, 512)
+        self.stackroots.append(s)
+        size_string = self.gc.rawmalloced_total_size
+        assert size_string > 512
+        self.gc._minor_collection()
+        assert self.gc.nursery_surviving_size == size_string
+
+        self.stackroots.pop()
+        self.gc._minor_collection()
+        assert self.gc.nursery_surviving_size == 0
+
 
 class Node(object):
     def __init__(self, x, prev, next):
