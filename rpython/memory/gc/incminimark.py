@@ -75,6 +75,7 @@ from rpython.rlib.debug import ll_assert, debug_print, debug_start, debug_stop
 from rpython.rlib.objectmodel import specialize, always_inline, we_are_translated
 from rpython.rlib import rgc, unroll
 from rpython.memory.gc.minimarkpage import out_of_memory
+from rpython.memory.gc.membalancer import MemBalancer
 
 #
 # Handles the objects in 2 generations:
@@ -373,6 +374,8 @@ class IncrementalMiniMarkGC(MovingGCBase):
         # result of time.time when last minor collection ended. initialized by setup
         self._timestamp_last_minor_gc = 0.0
 
+        self.membalancer = MemBalancer()
+
 
     def setup(self):
         """Called at run-time to initialize the GC."""
@@ -390,6 +393,7 @@ class IncrementalMiniMarkGC(MovingGCBase):
         self.rawmalloced_total_size = r_uint(0)
         self.rawmalloced_peak_size = r_uint(0)
         self.total_gc_time = 0.0
+        self.major_gc_time_in_cycle = 0.0
 
         self.gc_state = STATE_SCANNING
 
@@ -517,6 +521,11 @@ class IncrementalMiniMarkGC(MovingGCBase):
             llarena.arena_free(self.nursery)
             self.nursery_size = newsize
             self.allocate_nursery()
+            tuning = env.read_float_from_env('PYPY_GC_MEMBALANCER_TUNING')
+            if not tuning:
+                tuning = 60000
+            #
+            self.membalancer.runtime_init(nursery_size=newsize, TUNING=tuning)
         #
         env_max_number_of_pinned_objects = os.environ.get('PYPY_GC_MAX_PINNED')
         if env_max_number_of_pinned_objects:
@@ -567,11 +576,9 @@ class IncrementalMiniMarkGC(MovingGCBase):
         # initialize the threshold
         self.min_heap_size = max(self.min_heap_size, self.nursery_size *
                                               self.major_collection_threshold)
-        # the following two values are usually equal, but during raw mallocs
-        # with memory pressure accounting, next_major_collection_threshold
-        # is decremented to make the next major collection arrive earlier.
-        # See translator/c/test/test_newgc, test_nongc_attached_to_gc
-        self.next_major_collection_initial = self.min_heap_size
+        # raw memory with pressure is accounted for in the following variable,
+        # it's a (rough) number of bytes since the end of the last major collect
+        self._raw_malloc_memory_pressure = 0
         self.next_major_collection_threshold = self.min_heap_size
         self.set_major_threshold_from(0.0)
         ll_assert(self.extra_threshold == 0, "extra_threshold set too early")
@@ -582,7 +589,7 @@ class IncrementalMiniMarkGC(MovingGCBase):
 
     def set_major_threshold_from(self, threshold, reserving_size=0):
         # Set the next_major_collection_threshold.
-        threshold_max = (self.next_major_collection_initial *
+        threshold_max = (self.next_major_collection_threshold *
                          self.growth_rate_max)
         if threshold > threshold_max:
             threshold = threshold_max
@@ -597,7 +604,6 @@ class IncrementalMiniMarkGC(MovingGCBase):
         else:
             bounded = False
         #
-        self.next_major_collection_initial = threshold
         self.next_major_collection_threshold = threshold
         return bounded
 
@@ -830,13 +836,14 @@ class IncrementalMiniMarkGC(MovingGCBase):
         return rgc._encode_states(old_state, self.gc_state)
 
     def minor_collection_with_major_progress(self, extrasize=0,
-                                             force_enabled=False):
+                                             force_enabled=False,
+                                             threshold_reached=False):
         """Do a minor collection.  Then, if the GC is enabled and there
         is already a major GC in progress, run at least one major collection
         step.  If there is no major GC but the threshold is reached, start a
         major GC.
         """
-        self._minor_collection()
+        self._minor_collection(extrasize)
         if not self.enabled and not force_enabled:
             return
 
@@ -851,7 +858,7 @@ class IncrementalMiniMarkGC(MovingGCBase):
         # major_collection_step() increments
         # 'threshold_objects_made_old' by nursery_size/2.
 
-        if self.gc_state != STATE_SCANNING or self.threshold_reached(extrasize):
+        if self.gc_state != STATE_SCANNING or threshold_reached or self.threshold_reached(extrasize):
             self.major_collection_step(extrasize)
 
             # See documentation in major_collection_step() for target invariants
@@ -1000,7 +1007,8 @@ class IncrementalMiniMarkGC(MovingGCBase):
         # MemoryError.
         if self.threshold_reached(raw_malloc_usage(totalsize)):
             self.minor_collection_with_major_progress(
-                raw_malloc_usage(totalsize) + self.nursery_size // 2)
+                raw_malloc_usage(totalsize) + self.nursery_size // 2,
+                threshold_reached=True)
         #
         # Check if the object would fit in the ArenaCollection.
         # Also, an object allocated from ArenaCollection must be old.
@@ -1102,8 +1110,6 @@ class IncrementalMiniMarkGC(MovingGCBase):
     def set_max_heap_size(self, size):
         self.max_heap_size = float(size)
         if self.max_heap_size > 0.0:
-            if self.max_heap_size < self.next_major_collection_initial:
-                self.next_major_collection_initial = self.max_heap_size
             if self.max_heap_size < self.next_major_collection_threshold:
                 self.next_major_collection_threshold = self.max_heap_size
 
@@ -1111,8 +1117,8 @@ class IncrementalMiniMarkGC(MovingGCBase):
         # Decrement by 'sizehint' plus a very little bit extra.  This
         # is needed e.g. for _rawffi, which may allocate a lot of tiny
         # arrays.
-        self.next_major_collection_threshold -= (sizehint + 2 * WORD)
-        if self.next_major_collection_threshold < 0:
+        self._raw_malloc_memory_pressure += (sizehint + 2 * WORD)
+        if self.threshold_reached():
             # cannot trigger a full collection now, but we can ensure
             # that one will occur very soon
             self.nursery_free = self.nursery_top
@@ -1295,7 +1301,8 @@ class IncrementalMiniMarkGC(MovingGCBase):
 
     def threshold_reached(self, extra=0):
         return (self.next_major_collection_threshold -
-                float(self.get_total_memory_used())) < float(extra)
+                float(self.get_total_memory_used()) -
+                self._raw_malloc_memory_pressure) < float(extra)
 
     def card_marking_words_for_length(self, length):
         # --- Unoptimized version:
@@ -1770,13 +1777,13 @@ class IncrementalMiniMarkGC(MovingGCBase):
     # ----------
     # Nursery collection
 
-    def _minor_collection(self):
+    def _minor_collection(self, reserving_size=0):
         """Perform a minor collection: find the objects from the nursery
         that remain alive and move them out."""
         #
         start = time.time()
         debug_start("gc-minor")
-        debug_print("time since program start: ", start - self.program_start)
+        debug_print("time since program start:", start - self.program_start)
         debug_print("memory used before collect:", self.get_total_memory_used())
         debug_print("current threshold:", self.next_major_collection_threshold)
         debug_print("time since end of last minor GC:", start - self._timestamp_last_minor_gc)
@@ -1975,6 +1982,12 @@ class IncrementalMiniMarkGC(MovingGCBase):
             self.debug_check_consistency()     # expensive!
         #
         self.root_walker.finished_minor_collection()
+        #
+        self.membalancer.on_heartbeat(
+            self.nursery_surviving_size, # how much was allocated since last minor collection
+            start - self._timestamp_last_minor_gc # in what mutator time
+        )
+        self.recompute_major_threshold(reserving_size)
         #
         end = time.time()
         duration = end - start
@@ -2400,14 +2413,25 @@ class IncrementalMiniMarkGC(MovingGCBase):
             self.major_collection_step()
             n -= 1
 
+    def recompute_major_threshold(self, reserving_size):
+        if self.num_major_collects == 0:
+            # the threshold only gets recomputed after the first major collect
+            # happened, before that the estimates are still a bit wonky
+            return False
+        threshold = self.membalancer.compute_threshold(self.max_delta)
+        bounded = self.set_major_threshold_from(threshold, reserving_size)
+        debug_print("next major collection threshold: ",
+                    self.next_major_collection_threshold)
+        return bounded
+
     # Note - minor collections seem fast enough so that one
     # is done before every major collection step
     def major_collection_step(self, reserving_size=0):
         start = time.time()
         debug_start("gc-collect-step")
-        debug_print("time since program start: ", start - self.program_start)
+        debug_print("time since program start:", start - self.program_start)
         oldstate = self.gc_state
-        debug_print("starting gc state: ", GC_STATES[self.gc_state])
+        debug_print("starting gc state:", GC_STATES[self.gc_state])
         # Debugging checks
         if self.pinned_objects_in_nursery == 0:
             ll_assert(self.nursery_free == self.nursery,
@@ -2579,19 +2603,18 @@ class IncrementalMiniMarkGC(MovingGCBase):
                 #
                 # We also need to reset the GCFLAG_VISITED on prebuilt GC objects.
                 self.prebuilt_root_objects.foreach(self._reset_gcflag_visited, None)
-                #
-                # Set the threshold for the next major collection to be when we
-                # have allocated 'major_collection_threshold' times more than
-                # we currently have -- but no more than 'max_delta' more than
-                # we currently have.
+
                 total_memory_used = float(self.get_total_memory_used())
                 total_memory_used -= float(self.kept_alive_by_finalizer)
                 if total_memory_used < 0:
                     total_memory_used = 0
-                bounded = self.set_major_threshold_from(
-                    min(total_memory_used * self.major_collection_threshold,
-                        total_memory_used + self.max_delta),
-                    reserving_size)
+
+                freed = self.stat_freed_raw_memory_in_major_collection + self.ac.freed_since_last_prepare
+                self.membalancer.on_gc(freed, self.major_gc_time_in_cycle, total_memory_used)
+                self.major_gc_time_in_cycle = 0.0
+                self._raw_malloc_memory_pressure = 0
+
+                bounded = self.recompute_major_threshold(reserving_size)
                 #
                 # Print statistics
                 debug_start("gc-collect-done")
@@ -2603,12 +2626,10 @@ class IncrementalMiniMarkGC(MovingGCBase):
                 debug_print("bytes raw-malloced:   ",
                             self.stat_rawmalloced_total_size, " => ",
                             self.rawmalloced_total_size)
-                freed = self.stat_freed_raw_memory_in_major_collection + self.ac.freed_since_last_prepare
                 debug_print("freed in this major collection:", freed)
-                debug_print("next major collection threshold: ",
-                            self.next_major_collection_threshold)
                 total_memory_used = self.get_total_memory_used()
                 debug_print("total memory used:", total_memory_used)
+                debug_print("total time spent in GC in this process:", self.total_gc_time)
                 debug_stop("gc-collect-done")
                 self.hooks.fire_gc_collect(
                     num_major_collects=self.num_major_collects,
@@ -2654,10 +2675,11 @@ class IncrementalMiniMarkGC(MovingGCBase):
         else:
             ll_assert(False, "bogus gc_state")
 
-        debug_print("stopping, now in gc state: ", GC_STATES[self.gc_state])
+        debug_print("stopping, now in gc state:", GC_STATES[self.gc_state])
         duration = time.time() - start
         self.total_gc_time += duration
-        debug_print("time taken: ", duration)
+        self.major_gc_time_in_cycle += duration
+        debug_print("time taken:", duration)
         debug_stop("gc-collect-step")
         self.hooks.fire_gc_collect_step(
             duration=duration,
