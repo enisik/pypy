@@ -52,3 +52,4 @@ pypy/doc/config/*.rst
 pypy/doc/config/*.txt
 pypy/doc/_build
 site-packages/
+bin/
