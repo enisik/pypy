@@ -797,6 +797,8 @@ class IncrementalMiniMarkGC(MovingGCBase):
     def collect(self, gen=2):
         """Do a minor (gen=0), start a major (gen=1), or do a full
         major (gen>=2) collection."""
+        debug_start("gc-user-triggered")
+        debug_print("user program triggered a collection, generation", gen)
         if gen < 0:
             # Dangerous! this makes no progress on the major GC cycle.
             # If called too often, the memory usage will keep increasing,
@@ -820,6 +822,7 @@ class IncrementalMiniMarkGC(MovingGCBase):
             # This does a complete minor and major collection.
             self.minor_and_major_collection()
         self.rrc_invoke_callback()
+        debug_stop("gc-user-triggered")
 
     def collect_step(self):
         """
