@@ -229,6 +229,8 @@ class IncrementalMiniMarkGC(MovingGCBase):
     minimal_size_in_nursery = (
         llmemory.sizeof(HDR) + llmemory.sizeof(llmemory.Address))
 
+    use_old_threshold_algorithm = False
+
 
     TRANSLATION_PARAMS = {
         # Automatically adjust the size of the nursery and the
@@ -483,6 +485,7 @@ class IncrementalMiniMarkGC(MovingGCBase):
             #
             major_coll = env.read_float_from_env('PYPY_GC_MAJOR_COLLECT')
             if major_coll > 1.0:
+                self.use_old_threshold_algorithm = True
                 self.major_collection_threshold = major_coll
             #
             growth = env.read_float_from_env('PYPY_GC_GROWTH')
@@ -521,11 +524,12 @@ class IncrementalMiniMarkGC(MovingGCBase):
             llarena.arena_free(self.nursery)
             self.nursery_size = newsize
             self.allocate_nursery()
-            tuning = env.read_float_from_env('PYPY_GC_MEMBALANCER_TUNING')
-            if not tuning:
-                tuning = 60000
-            #
-            self.membalancer.runtime_init(nursery_size=newsize, TUNING=tuning)
+            if not self.use_old_threshold_algorithm:
+                tuning = env.read_float_from_env('PYPY_GC_MEMBALANCER_TUNING')
+                if not tuning:
+                    tuning = 60000
+                #
+                self.membalancer.runtime_init(nursery_size=newsize, TUNING=tuning)
         #
         env_max_number_of_pinned_objects = os.environ.get('PYPY_GC_MAX_PINNED')
         if env_max_number_of_pinned_objects:
@@ -582,8 +586,6 @@ class IncrementalMiniMarkGC(MovingGCBase):
         self.next_major_collection_threshold = self.min_heap_size
         self.set_major_threshold_from(0.0)
         ll_assert(self.extra_threshold == 0, "extra_threshold set too early")
-        debug_print("next major collection threshold: ",
-                    self.next_major_collection_threshold)
         debug_stop("gc-set-nursery-size")
 
 
@@ -605,6 +607,8 @@ class IncrementalMiniMarkGC(MovingGCBase):
             bounded = False
         #
         self.next_major_collection_threshold = threshold
+        debug_print("next major collection threshold: ",
+                    self.next_major_collection_threshold)
         return bounded
 
 
@@ -1986,11 +1990,12 @@ class IncrementalMiniMarkGC(MovingGCBase):
         #
         self.root_walker.finished_minor_collection()
         #
-        self.membalancer.on_heartbeat(
-            self.nursery_surviving_size, # how much was allocated since last minor collection
-            start - self._timestamp_last_minor_gc # in what mutator time
-        )
-        self.recompute_major_threshold(reserving_size)
+        if not self.use_old_threshold_algorithm:
+            self.membalancer.on_heartbeat(
+                self.nursery_surviving_size, # how much was allocated since last minor collection
+                start - self._timestamp_last_minor_gc # in what mutator time
+            )
+            self.recompute_major_threshold(reserving_size)
         #
         end = time.time()
         duration = end - start
@@ -2421,10 +2426,9 @@ class IncrementalMiniMarkGC(MovingGCBase):
             # the threshold only gets recomputed after the first major collect
             # happened, before that the estimates are still a bit wonky
             return False
+        assert not self.use_old_threshold_algorithm
         threshold = self.membalancer.compute_threshold(self.max_delta)
         bounded = self.set_major_threshold_from(threshold, reserving_size)
-        debug_print("next major collection threshold: ",
-                    self.next_major_collection_threshold)
         return bounded
 
     # Note - minor collections seem fast enough so that one
@@ -2613,11 +2617,17 @@ class IncrementalMiniMarkGC(MovingGCBase):
                     total_memory_used = 0
 
                 freed = self.stat_freed_raw_memory_in_major_collection + self.ac.freed_since_last_prepare
-                self.membalancer.on_gc(freed, self.major_gc_time_in_cycle, total_memory_used)
                 self.major_gc_time_in_cycle = 0.0
                 self._raw_malloc_memory_pressure = 0
 
-                bounded = self.recompute_major_threshold(reserving_size)
+                if not self.use_old_threshold_algorithm:
+                    self.membalancer.on_gc(freed, self.major_gc_time_in_cycle, total_memory_used)
+                    bounded = self.recompute_major_threshold(reserving_size)
+                else:
+                    bounded = self.set_major_threshold_from(
+                        min(total_memory_used * self.major_collection_threshold,
+                            total_memory_used + self.max_delta),
+                        reserving_size)
                 #
                 # Print statistics
                 debug_start("gc-collect-done")
