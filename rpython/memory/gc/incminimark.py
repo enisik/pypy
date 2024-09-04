@@ -1993,6 +1993,7 @@ class IncrementalMiniMarkGC(MovingGCBase):
         if not self.use_old_threshold_algorithm:
             self.membalancer.on_heartbeat(
                 self.nursery_surviving_size, # how much was allocated since last minor collection
+                # XXX this includes the major gc time *in* the mutator time
                 start - self._timestamp_last_minor_gc # in what mutator time
             )
             self.recompute_major_threshold(reserving_size)
@@ -2617,12 +2618,12 @@ class IncrementalMiniMarkGC(MovingGCBase):
                     total_memory_used = 0
 
                 freed = self.stat_freed_raw_memory_in_major_collection + self.ac.freed_since_last_prepare
-                self.major_gc_time_in_cycle = 0.0
                 self._raw_malloc_memory_pressure = 0
 
                 if not self.use_old_threshold_algorithm:
                     self.membalancer.on_gc(freed, self.major_gc_time_in_cycle, total_memory_used)
                     bounded = self.recompute_major_threshold(reserving_size)
+                    self.major_gc_time_in_cycle = 0.0
                 else:
                     bounded = self.set_major_threshold_from(
                         min(total_memory_used * self.major_collection_threshold,
