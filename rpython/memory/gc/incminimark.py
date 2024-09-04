@@ -374,14 +374,14 @@ class IncrementalMiniMarkGC(MovingGCBase):
         self.threshold_objects_made_old = r_uint(0)
 
         # result of time.time when last minor collection ended. initialized by setup
-        self._timestamp_last_minor_gc = 0.0
+        self._timestamp_end_last_gc_step = 0.0
 
         self.membalancer = MemBalancer()
 
 
     def setup(self):
         """Called at run-time to initialize the GC."""
-        self._timestamp_last_minor_gc = time.time()
+        self._timestamp_end_last_gc_step = time.time()
 
         #
         # Hack: MovingGCBase.setup() sets up stuff related to id(), which
@@ -1793,7 +1793,7 @@ class IncrementalMiniMarkGC(MovingGCBase):
         debug_print("time since program start:", start - self.program_start)
         debug_print("memory used before collect:", self.get_total_memory_used())
         debug_print("current threshold:", self.next_major_collection_threshold)
-        debug_print("time since end of last minor GC:", start - self._timestamp_last_minor_gc)
+        debug_print("time since end of last minor GC/gc step:", start - self._timestamp_end_last_gc_step)
         #
         # All nursery barriers are invalid from this point on.  They
         # are evaluated anew as part of the minor collection.
@@ -1993,14 +1993,13 @@ class IncrementalMiniMarkGC(MovingGCBase):
         if not self.use_old_threshold_algorithm:
             self.membalancer.on_heartbeat(
                 self.nursery_surviving_size, # how much was allocated since last minor collection
-                # XXX this includes the major gc time *in* the mutator time
-                start - self._timestamp_last_minor_gc # in what mutator time
+                start - self._timestamp_end_last_gc_step # in what mutator time
             )
             self.recompute_major_threshold(reserving_size)
         #
         end = time.time()
         duration = end - start
-        self._timestamp_last_minor_gc = end
+        self._timestamp_end_last_gc_step = end
 
         self.total_gc_time += duration
         debug_print("time taken:", duration)
@@ -2690,9 +2689,11 @@ class IncrementalMiniMarkGC(MovingGCBase):
             ll_assert(False, "bogus gc_state")
 
         debug_print("stopping, now in gc state:", GC_STATES[self.gc_state])
-        duration = time.time() - start
+        end = time.time()
+        duration = end - start
         self.total_gc_time += duration
         self.major_gc_time_in_cycle += duration
+        self._timestamp_end_last_gc_step = end
         debug_print("time taken:", duration)
         debug_stop("gc-collect-step")
         self.hooks.fire_gc_collect_step(
