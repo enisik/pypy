@@ -527,7 +527,7 @@ class IncrementalMiniMarkGC(MovingGCBase):
             if not self.use_old_threshold_algorithm:
                 tuning = env.read_float_from_env('PYPY_GC_MEMBALANCER_TUNING')
                 if not tuning:
-                    tuning = 60000
+                    tuning = 3000
                 #
                 self.membalancer.runtime_init(nursery_size=newsize, TUNING=tuning)
         #
